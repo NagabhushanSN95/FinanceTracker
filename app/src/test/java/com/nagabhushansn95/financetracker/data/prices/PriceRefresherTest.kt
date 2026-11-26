@@ -175,8 +175,11 @@ class PriceRefresherTest {
         )
         val appleRow = summary.rows.first { it.instrument.id == apple }
         assertEquals(2 * 331.9 * 94.73, appleRow.currentValue, 0.01)
-        // Costs stay in the holding's own currency; only the current value is brought to rupees.
-        assertEquals(500.0, appleRow.position.costHeld, 0.01)
+        // The cost is carried in rupees at the row's pinned rate (no dollar account loads it); the own-currency
+        // position keeps the dollars for the per-unit figures.
+        assertEquals(500.0 * 85.0, appleRow.position.costHeld, 0.01)
+        assertEquals(500.0, appleRow.native.costHeld, 0.01)
+        assertEquals(250.0, appleRow.native.averageCost!!, 0.01)
         assertEquals(331.9, appleRow.unitPrice!!, 1e-9)
     }
 }

@@ -13,10 +13,13 @@ import kotlin.math.pow
 data class CashFlow(val date: LocalDate, val amount: Double)
 
 /**
- * What the ledger says about one instrument, in the instrument's currency.
+ * What the ledger says about one instrument, in the instrument's currency, or in rupees when the rows are valued
+ * through `amountOf` (the summary does this for a holding bought in dollars: see [InvestmentSummaryBuilder.build]).
  *
  * Unit-based instruments (rows carry quantities) match every sale against the oldest units still held, first in
- * first out, as Zerodha's P&L and the income-tax rules do: a sale realises `amount − cost of those lots`. Lots are
+ * first out, as Zerodha's P&L and the income-tax rules do: a sale realises `amount − cost of those lots`. Units
+ * bought on the day of the sale go first, whichever order the two trades were struck in: a sell-and-buy-back is
+ * intraday (speculative income in the tax rules, and in Zerodha's P&L), and leaves the older lots as they were. Lots are
  * kept per cash account (the demat account a purchase was paid from), and a sale takes the oldest lots of the
  * account its proceeds land in before any other, since capital gains are taxed per account holder; a holding bought
  * through one account and sold through another still matches. Bonus units form a lot of their own at zero cost,
@@ -61,7 +64,7 @@ data class Position(
 
 object Holdings {
     /** Units bought together, the cost still attached to them, and the cash account they were bought through. */
-    private class Lot(var units: Double, var cost: Double, val account: Long?)
+    private class Lot(var units: Double, var cost: Double, val account: Long?, val date: LocalDate)
 
     /** Prefix the bonus-or-split dialog writes for a split (see InstrumentDetailScreen). */
     const val SPLIT_PREFIX = "Stock Split"
@@ -74,12 +77,14 @@ object Holdings {
      * Positions for every instrument that appears in [transactions] (which may be the whole ledger). [unitBased] says
      * which instruments are tracked in units (stocks, funds); every other instrument uses the amount-only method even
      * when its rows carry a quantity, because deposits and policies imported from 4.x all carry a quantity of 1.
-     * [events] carry the bonus and split units.
+     * [events] carry the bonus and split units. [amountOf] values a row: its own amount by default, or its rupee
+     * value when the holding's rows are in another currency.
      */
     fun positions(
         transactions: List<TransactionEntity>,
         unitBased: (Long) -> Boolean = { true },
         events: List<HoldingEvent> = emptyList(),
+        amountOf: (TransactionEntity) -> Double = { it.amount },
     ): Map<Long, Position> {
         val eventsById = events.groupBy { it.instrumentId }
         return transactions.filter { it.instrumentId != null }
@@ -90,6 +95,7 @@ object Holdings {
                     rows.sortedWith(compareBy({ it.date }, { it.id })),
                     unitBased(id),
                     eventsById[id].orEmpty(),
+                    amountOf,
                 )
             }
     }
@@ -105,6 +111,7 @@ object Holdings {
         rows: List<TransactionEntity>,
         unitBased: Boolean = true,
         events: List<HoldingEvent> = emptyList(),
+        amountOf: (TransactionEntity) -> Double = { it.amount },
     ): Position {
         var units = 0.0
         var cost = 0.0
@@ -117,10 +124,17 @@ object Holdings {
             unitBased && rows.any { it.quantity != null && (it.kind == TransactionKind.INVEST || it.kind == TransactionKind.REDEEM) }
         // Open lots, oldest first; a sale consumes them in that order (FIFO).
         val lots = ArrayDeque<Lot>()
-        // Rows and unit events in date order; on one day the rows come first, then the events in their order.
+        // Rows and unit events in date order. On one day the purchases come first (so a sale can take the day's own
+        // units whichever was struck first), then the other rows in their order, then the events in theirs.
         val steps = (rows.map { Step.Cash(it) } + events.filter { it.kind.addsUnits }
             .sortedWith(compareBy({ it.date }, { it.id })).map { Step.Units(it) })
-            .sortedBy { it.date }
+            .sortedWith(compareBy({ it.date }, {
+                when {
+                    it is Step.Cash && it.row.kind == TransactionKind.INVEST -> 0
+                    it is Step.Cash -> 1
+                    else -> 2
+                }
+            }))
 
         for (step in steps) {
             if (step is Step.Units) {
@@ -137,14 +151,14 @@ object Holdings {
                     val byAccount =
                         lots.groupBy { it.account }.mapValues { (_, l) -> l.sumOf { it.units } }
                     if (held > Position.UNIT_EPSILON) byAccount.forEach { (account, u) ->
-                        lots.addLast(Lot(q * u / held, 0.0, account))
-                    } else lots.addLast(Lot(q, 0.0, null))
+                        lots.addLast(Lot(q * u / held, 0.0, account, e.date))
+                    } else lots.addLast(Lot(q, 0.0, null, e.date))
                 }
                 units += q
                 continue
             }
             val t = (step as Step.Cash).row
-            val amount = t.amount
+            val amount = amountOf(t)
             when (t.kind) {
                 TransactionKind.INVEST -> {
                     invested += amount
@@ -153,7 +167,14 @@ object Holdings {
                         val q = t.quantity ?: 0.0
                         units += q
                         // A purchase recorded without units keeps its cost in the holding; nothing can sell it.
-                        if (q > Position.UNIT_EPSILON) lots.addLast(Lot(q, amount, t.fromAccountId))
+                        if (q > Position.UNIT_EPSILON) lots.addLast(
+                            Lot(
+                                q,
+                                amount,
+                                t.fromAccountId,
+                                t.date
+                            )
+                        )
                     }
                     if (amount != 0.0) flows += CashFlow(t.date, -amount)
                 }
@@ -165,9 +186,13 @@ object Holdings {
                         var need = q
                         var costOut = 0.0
                         while (need > Position.UNIT_EPSILON && lots.isNotEmpty()) {
-                            // The oldest lot of the account the money comes back to, else the oldest of any.
+                            // The day's own lots first (intraday), then the oldest lot of the account the money
+                            // comes back to, else the oldest of any.
                             val lot =
-                                lots.firstOrNull { it.account == t.toAccountId } ?: lots.first()
+                                lots.firstOrNull { it.date == t.date && it.account == t.toAccountId }
+                                    ?: lots.firstOrNull { it.date == t.date }
+                                    ?: lots.firstOrNull { it.account == t.toAccountId }
+                                    ?: lots.first()
                             val take = minOf(lot.units, need)
                             val share = lot.cost * take / lot.units
                             costOut += share

@@ -6,6 +6,8 @@ import com.nagabhushansn95.financetracker.data.db.AppDatabase
 import com.nagabhushansn95.financetracker.data.db.TestDb
 import com.nagabhushansn95.financetracker.data.db.entity.Account
 import com.nagabhushansn95.financetracker.data.db.entity.AccountType
+import com.nagabhushansn95.financetracker.data.db.entity.FxRate
+import com.nagabhushansn95.financetracker.data.db.entity.Security
 import com.nagabhushansn95.financetracker.data.db.entity.Instrument
 import com.nagabhushansn95.financetracker.data.db.entity.InstrumentType
 import com.nagabhushansn95.financetracker.data.db.entity.PriceSource
@@ -326,5 +328,109 @@ class InvestmentSummaryTest {
             today,
         )
         assertEquals(0.25, summary.categories.single().targetPct!!, 1e-9)
+    }
+
+    /**
+     * A dollar ETF bought from a dollar demat account: its cost is the rupees the dollars cost to load, its value the
+     * units at the latest price and rate, and the own-currency position keeps the dollar figures.
+     */
+    @Test
+    fun valuesADollarHoldingInRupees() = runTest {
+        InvestmentCategories.seedIfEmpty(db)
+        val bank = db.accountDao().insert(
+            Account(
+                name = "Bank",
+                accountType = AccountType.BANK,
+                displayOrder = 1,
+                createdTime = now,
+                modifiedTime = now
+            )
+        )
+        val usd = db.accountDao().insert(
+            Account(
+                name = "Demat USD",
+                accountType = AccountType.DEMAT,
+                currency = "USD",
+                displayOrder = 2,
+                createdTime = now,
+                modifiedTime = now
+            )
+        )
+        val voo = db.insertListed(
+            Instrument(
+                name = "Vanguard S&P 500 ETF",
+                instrumentType = InstrumentType.STOCK,
+                createdTime = now,
+                modifiedTime = now
+            ),
+            Security(
+                symbol = "VOO",
+                exchange = "NYSE",
+                currency = "USD",
+                lastPrice = 635.54,
+                lastPriceDate = today,
+                lastPriceSource = PriceSource.YAHOO
+            ),
+        )
+        // ₹141,952.50 bought $1,500: ₹94.635 a dollar.
+        db.transactionDao().insert(
+            TransactionEntity(
+                createdTime = now,
+                modifiedTime = now,
+                date = today.minusDays(5),
+                kind = TransactionKind.TRANSFER,
+                fromAccountId = bank,
+                toAccountId = usd,
+                particulars = "Loaded USD",
+                amount = 141952.5,
+                toAmount = 1500.0,
+                fxRate = 94.635,
+            )
+        )
+        db.transactionDao().insert(
+            TransactionEntity(
+                createdTime = now,
+                modifiedTime = now,
+                date = today.minusDays(4),
+                kind = TransactionKind.INVEST,
+                fromAccountId = usd,
+                instrumentId = voo,
+                particulars = "Bought Stocks - VOO",
+                quantity = 0.0595,
+                rate = 672.95,
+                amount = 40.0069,
+            )
+        )
+        db.instrumentDao().upsertFxRate(
+            FxRate(
+                date = today,
+                base = "USD",
+                quote = "INR",
+                rate = 92.67,
+                source = "YAHOO"
+            )
+        )
+        val rates = db.instrumentDao().getAllFxRates()
+        val summary = InvestmentSummaryBuilder.build(
+            db.instrumentDao().getAll(),
+            db.instrumentDao().getAllCategories(),
+            db.transactionDao().getAllWithInstrument(),
+            db.instrumentDao().getAllSecurities(),
+            db.accountDao().getAll(),
+            db.transactionDao().getAll(),
+            asOf = today,
+            fxToInr = InvestmentSummaryBuilder.latestFx(rates),
+            fxRates = rates,
+        )
+        val row = summary.rows.single { it.instrument.id == voo }
+        assertEquals(40.0069 * 94.635, row.position.costHeld, 0.01)
+        assertEquals(0.0595 * 635.54 * 92.67, row.currentValue, 0.01)
+        assertEquals(40.0069, row.native.costHeld, 1e-6)
+        assertEquals(40.0069 / 0.0595, row.native.averageCost!!, 1e-6)
+        assertEquals(0.0595, row.native.units, 1e-9)
+        assertEquals(row.position.costHeld, summary.total.invested, 0.01)
+        assertEquals(row.currentValue, summary.total.current, 0.01)
+        // The one cash flow behind the XIRR is in rupees too.
+        assertEquals(-40.0069 * 94.635, row.position.cashFlows.single().amount, 0.01)
     }
 }

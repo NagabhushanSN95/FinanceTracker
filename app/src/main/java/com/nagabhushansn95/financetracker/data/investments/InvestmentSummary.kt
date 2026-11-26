@@ -32,6 +32,12 @@ data class HoldingRow(
     val currentValue: Double,
     val xirr: Double?,
     val security: Security? = null,
+    /**
+     * The position in the security's own currency. The same object as [position] for a rupee holding; for a holding
+     * bought in dollars, [position] is in rupees (the cost at the rate the dollars were loaded, see [ForeignCurrency])
+     * and this one in dollars, for the per-unit figures beside a dollar price.
+     */
+    val native: Position = position,
 ) {
     val isDeposit: Boolean get() = instrument.instrumentType == InstrumentType.FIXED_DEPOSIT
     val heldProfit get() = currentValue - position.costHeld
@@ -152,6 +158,7 @@ object InvestmentSummaryBuilder {
                 policies,
                 groups,
                 securitiesAndEvents.second,
+                fxRates,
             )
         }.flowOn(Dispatchers.Default)
     }
@@ -185,6 +192,8 @@ object InvestmentSummaryBuilder {
         insurancePolicies: List<InsurancePolicy> = emptyList(),
         summaryGroups: List<SummaryGroup> = emptyList(),
         holdingEvents: List<HoldingEvent> = emptyList(),
+        /** Every stored rate; dates the rupee cost of a foreign holding's rows that no load prices. */
+        fxRates: List<FxRate> = emptyList(),
     ): InvestmentSummary {
         val protection =
             insurancePolicies.filter { !it.insuranceType.investment }.map { it.instrumentId }
@@ -195,9 +204,42 @@ object InvestmentSummaryBuilder {
         val unitBasedIds =
             instruments.filter { it.instrumentType == InstrumentType.STOCK || it.instrumentType == InstrumentType.MUTUAL_FUND }
                 .map { it.id }.toSet()
-        val positions =
-            Holdings.positions(ledgerWithInstrument, { it in unitBasedIds }, holdingEvents)
         val securityById = securities.associateBy { it.instrumentId }
+        // A holding in another currency is carried in rupees: a buy from a dollar account costs what those dollars
+        // cost to load (the account's pool, as the statistics value any spend from it); a row the pool cannot price
+        // takes its own pinned rate, else the stored rate nearest its date. The holding's own-currency position is
+        // kept beside it for the per-unit figures.
+        val foreignIds = securities.filter { it.currency != "INR" }.map { it.instrumentId }.toSet()
+        val rupees = if (foreignIds.isEmpty()) emptyMap()
+        else ForeignCurrency.rupeeValues(accounts, allTransactions, fxRates)
+        val accountCurrency = accounts.associate { it.id to it.currency }
+        fun rupeesOf(t: TransactionEntity): Double {
+            val id = t.instrumentId
+            if (id == null || id !in foreignIds) return t.amount
+            rupees[t.id]?.let { return it }
+            val account = t.fromAccountId ?: t.toAccountId
+            // Paid through a rupee account: the amount is already rupees.
+            if (account != null && (accountCurrency[account] ?: "INR") == "INR") return t.amount
+            val currency = securityById.getValue(id).currency
+            val rate =
+                t.fxRate ?: ForeignCurrency.rateOn(fxRates, currency, t.date) ?: fxToInr[currency]
+                ?: 1.0
+            return t.amount * rate
+        }
+
+        val positions =
+            Holdings.positions(
+                ledgerWithInstrument,
+                { it in unitBasedIds },
+                holdingEvents,
+                ::rupeesOf
+            )
+        val nativePositions = if (foreignIds.isEmpty()) positions
+        else Holdings.positions(
+            ledgerWithInstrument.filter { it.instrumentId in foreignIds },
+            { it in unitBasedIds },
+            holdingEvents
+        )
         val byId = categories.associateBy { it.id }
         val byName = categories.filter { it.parentId == null }.associateBy { it.name }
         val riskName = riskLevels.associate { it.id to it.name }
@@ -216,12 +258,16 @@ object InvestmentSummaryBuilder {
             val formula =
                 if (fd != null && depositDate != null && position.costHeld > Position.UNIT_EPSILON)
                     FdMath.estimate(fd, position.costHeld, depositDate, asOf) else null
-            // Prices and costs are in the security's currency; a foreign holding is brought to rupees at the latest rate.
+            // The price is in the security's currency; a foreign holding's value is brought to rupees at the latest rate,
+            // its cost already is (see above), so the held profit carries the currency's move as well as the price's.
             val currency = security?.currency ?: "INR"
+            val native = nativePositions[instrument.id] ?: position
             val fx = if (currency == "INR") 1.0 else fxToInr[currency] ?: 1.0
+            val price = security?.lastPrice
             val current = when {
                 formula != null -> formula
-                else -> position.currentValue(security?.lastPrice, null) * fx
+                native.hasUnits && price != null -> native.units * price * fx
+                else -> position.costHeld
             }
             HoldingRow(
                 instrument = instrument,
@@ -232,6 +278,7 @@ object InvestmentSummaryBuilder {
                 currentValue = current,
                 xirr = Holdings.xirr(position.cashFlows, current, asOf),
                 security = security,
+                native = native,
             )
         }
         val own = rows.filter { it.instrument.owner == Instrument.OWNER_SELF }

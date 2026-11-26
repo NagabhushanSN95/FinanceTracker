@@ -887,11 +887,16 @@ private fun HoldingListRow(h: HoldingRow, dateNote: String?, onClick: () -> Unit
             )
         }
         val units = h.position.units.takeIf { h.position.hasUnits }
+        // Per-unit figures are in the security's own currency (a dollar price beside a dollar average cost); the
+        // money figures are rupees.
+        val currency = h.security?.currency ?: "INR"
+        fun perUnit(x: Double) =
+            if (currency == "INR") "%.2f".format(x) else MoneyFormat.amount(x, currency)
         val line = listOfNotNull(
             h.security?.tickerOrNull,
             units?.let { "${FdMath.plain(it)} units" },
-            h.position.averageCost?.let { "avg %.2f".format(it) },
-            h.unitPrice?.let { "price %.2f".format(it) }
+            h.native.averageCost?.let { "avg ${perUnit(it)}" },
+            h.unitPrice?.let { "price ${perUnit(it)}" }
                 ?: if (units != null && units > Position.UNIT_EPSILON) "no price" else null,
             if (h.position.units > Position.UNIT_EPSILON) "invested ${MoneyFormat.amount(h.position.costHeld)}" else null,
             h.instrument.owner.takeIf { it != Instrument.OWNER_SELF }?.let { "owner $it" },
@@ -1001,10 +1006,18 @@ fun HoldingScreen(
                 .padding(padding))
             return@Scaffold
         }
-        val position = v.position
         val security = v.security
-        val current = position.currentValue(security.lastPrice, null)
-        val xirr = Holdings.xirr(position.cashFlows, current, LocalDate.now())
+        val foreign = security.currency != "INR"
+        // Money figures come from the summary's row, in rupees (a dollar holding's cost at the rate its dollars were
+        // loaded, its value at the latest rate); units, average cost and price stay in the security's currency.
+        val row = state.rowFor(v)
+        val position = row.position
+        val native = v.position
+        val current = row.currentValue
+        val nativeCurrent = native.currentValue(security.lastPrice, null)
+        val xirr = row.xirr
+        fun perUnit(x: Double) =
+            if (foreign) MoneyFormat.amount(x, security.currency) else "%.2f".format(x)
         // Trades through more than one account (yours and a family member's demat, say) name the account per row.
         val tradeAccounts = v.rows.filter {
             val k = HoldingEntries.kindOf(it)
@@ -1043,14 +1056,45 @@ fun HoldingScreen(
                             style = MaterialTheme.typography.headlineSmall
                         )
                         Row {
-                            StatCell("Units", FdMath.plain(position.units))
+                            StatCell("Units", FdMath.plain(native.units))
                             StatCell(
                                 "Avg cost",
-                                position.averageCost?.let { "%.2f".format(it) } ?: "—")
+                                native.averageCost?.let { perUnit(it) } ?: "—")
                             StatCell(
                                 "Price",
-                                security.lastPrice?.let { "%.2f".format(it) } ?: "none")
+                                security.lastPrice?.let { perUnit(it) } ?: "none")
                         }
+                        if (foreign) Text(
+                            // The same position in its own currency, and the rate the rupee value uses.
+                            listOfNotNull(
+                                "In ${security.currency}: ${
+                                    MoneyFormat.amount(
+                                        nativeCurrent,
+                                        security.currency
+                                    )
+                                }",
+                                "invested ${
+                                    MoneyFormat.amount(
+                                        native.costHeld,
+                                        security.currency
+                                    )
+                                }",
+                                "held ${
+                                    MoneyFormat.amount(
+                                        nativeCurrent - native.costHeld,
+                                        security.currency
+                                    )
+                                }",
+                                (current / nativeCurrent).takeIf { nativeCurrent > Position.UNIT_EPSILON && it.isFinite() }
+                                    ?.let {
+                                        "at ₹%.2f per ${MoneyFormat.symbol(security.currency)}".format(
+                                            it
+                                        )
+                                    },
+                            ).joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         Row {
                             StatCell("Invested", MoneyFormat.amount(position.costHeld))
                             StatCell(

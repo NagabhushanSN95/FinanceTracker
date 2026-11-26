@@ -273,4 +273,38 @@ class HoldingsTest {
         assertEquals(setOf(1L, 2L), positions.keys)
         assertEquals(200.0, positions[2]!!.costHeld, 1e-9)
     }
+
+    /** Sold 25 and bought 25 back the same day: an intraday pair that leaves the older lots untouched. */
+    @Test
+    fun sameDaySellAndBuyBackIsIntraday() {
+        val p = Holdings.position(
+            1, listOf(
+                row("2024-10-04", TransactionKind.INVEST, 3350.0, qty = 5.0),
+                row("2024-12-04", TransactionKind.INVEST, 12640.0, qty = 20.0),
+                row("2025-01-20", TransactionKind.REDEEM, 12867.5, qty = 25.0),   // sold first…
+                row(
+                    "2025-01-20",
+                    TransactionKind.INVEST,
+                    12825.0,
+                    qty = 25.0
+                ),   // …and bought back later that day
+            )
+        )
+        assertEquals(25.0, p.units, 1e-9)
+        assertEquals(12867.5 - 12825.0, p.realised, 1e-6)
+        // The October and December lots still carry the cost; the day's own lot was the one sold.
+        assertEquals(3350.0 + 12640.0, p.costHeld, 1e-6)
+        // A later sale takes the October lot first, as before.
+        val later = Holdings.position(
+            1, listOf(
+                row("2024-10-04", TransactionKind.INVEST, 3350.0, qty = 5.0),
+                row("2024-12-04", TransactionKind.INVEST, 12640.0, qty = 20.0),
+                row("2025-01-20", TransactionKind.REDEEM, 12867.5, qty = 25.0),
+                row("2025-01-20", TransactionKind.INVEST, 12825.0, qty = 25.0),
+                row("2025-02-27", TransactionKind.REDEEM, 2980.0, qty = 5.0),
+            )
+        )
+        assertEquals(42.5 + (2980.0 - 3350.0), later.realised, 1e-6)
+        assertEquals(12640.0, later.costHeld, 1e-6)
+    }
 }

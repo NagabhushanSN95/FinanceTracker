@@ -1,6 +1,7 @@
 package com.nagabhushansn95.financetracker.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.TopAppBarColors
@@ -11,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 // Brand colours taken from the launcher icon: navy background, gold coin.
 val Navy = Color(0xFF0B1A3A)
@@ -19,6 +21,13 @@ val Gold = Color(0xFFF2B01E)
 val GoldDark = Color(0xFF9A6A00)
 val GoldPale = Color(0xFFFFE9B3)
 val Cream = Color(0xFFFCFAF5)
+
+/**
+ * The ledger's colour for a transfer, next to red debits and green credits as in 4.x: Holo blue on the light schemes,
+ * a paler blue on the dark one.
+ */
+val ColorScheme.transfer: Color
+    get() = if (background.luminance() < 0.5f) Color(0xFF8AB4F8) else HoloBlueDark
 
 private val LightColors = lightColorScheme(
     primary = Navy,

@@ -1,5 +1,7 @@
 package com.nagabhushansn95.financetracker.ui.investments
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +77,7 @@ object InvestmentRoutes {
  * Investments hub: the totals, tiles that open the per-type screens, and the Investment Summary sheet live
  * (categories, risk levels, the user's own groups) in narrow tables with three switchable metric columns.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun InvestmentsScreen(onNavigate: (String) -> Unit, viewModel: InvestmentsViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -84,7 +87,9 @@ fun InvestmentsScreen(onNavigate: (String) -> Unit, viewModel: InvestmentsViewMo
         LoadingOrMessage(state.loaded, "Nothing invested yet.", Modifier.fillMaxSize())
         return
     }
-    var view by rememberSaveable { mutableStateOf(MetricView.VALUE) }
+    var view by rememberSaveable { mutableStateOf(viewModel.summaryView) }
+    var custom by rememberSaveable { mutableStateOf(viewModel.customColumns) }
+    val columns = view.columns(custom)
     var expanded by rememberSaveable { mutableStateOf(setOf<String>()) }
     val prices by viewModel.prices.collectAsStateWithLifecycle()
     LazyColumn(
@@ -94,25 +99,45 @@ fun InvestmentsScreen(onNavigate: (String) -> Unit, viewModel: InvestmentsViewMo
         item { TotalsCard(summary, prices, viewModel::refreshPrices) }
         item { Tiles(summary, savings, onNavigate) }
         item {
+            Text(
+                "Investment summary",
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
+        // The chips stay put at the top while the three tables scroll under them, so the columns can be switched
+        // from any of them.
+        stickyHeader(key = "metric-chips") {
+            MetricViewChips(
+                view,
+                custom,
+                onChange = { view = it; viewModel.summaryView = it },
+                onCustomChange = { custom = it; viewModel.customColumns = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.background)
+                    .padding(vertical = 4.dp),
+            )
+        }
+        item {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("Investment summary", style = MaterialTheme.typography.titleMedium)
-                    MetricViewChips(
-                        view,
-                        { view = it },
-                        modifier = Modifier.padding(vertical = 4.dp)
+                    Text(
+                        "By category",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(bottom = 4.dp)
                     )
                     SummaryTable(
                         lines = summary.categories,
                         summary = summary,
-                        view = view,
+                        columns = columns,
                         expanded = expanded,
                         onToggle = { key ->
                             expanded = if (key in expanded) expanded - key else expanded + key
                         },
                         footer = summary.total,
                     )
-                    if (view == MetricView.ALLOCATION) Text(
+                    if (Metric.TARGET in columns) Text(
                         if (summary.goalAmount == null) "No goal amount set: targets follow the wealth shares. Set it under Targets."
                         else "Targets: goal ${MoneyFormat.compact(summary.goalAmount)} by the goal shares, the rest by the wealth shares. Bar: current share; tick: target; box: tolerance. \"!\" marks a drift beyond it.",
                         style = MaterialTheme.typography.bodySmall,
@@ -133,7 +158,7 @@ fun InvestmentsScreen(onNavigate: (String) -> Unit, viewModel: InvestmentsViewMo
                     SummaryTable(
                         lines = summary.riskLevels,
                         summary = summary,
-                        view = view,
+                        columns = columns,
                         expanded = expanded,
                         onToggle = { key ->
                             expanded = if (key in expanded) expanded - key else expanded + key
@@ -158,7 +183,7 @@ fun InvestmentsScreen(onNavigate: (String) -> Unit, viewModel: InvestmentsViewMo
                     ) else SummaryTable(
                         lines = summary.groups,
                         summary = summary,
-                        view = view,
+                        columns = columns,
                         expanded = expanded,
                         onToggle = { key ->
                             expanded = if (key in expanded) expanded - key else expanded + key

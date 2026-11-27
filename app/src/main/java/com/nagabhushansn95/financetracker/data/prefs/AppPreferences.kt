@@ -237,6 +237,15 @@ class AppPreferences(context: Context) {
             .putString(KEY_FD_OWNERS, value.owners.joinToString(SET_SEPARATOR))
             .apply()
 
+    /** The Investment Summary's column set (a MetricView name; blank = the default) and the Custom set's metrics. */
+    var summaryView: String
+        get() = prefs.getString(KEY_SUMMARY_VIEW, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SUMMARY_VIEW, value).apply()
+    var summaryCustomColumns: List<String>
+        get() = prefs.getString(KEY_SUMMARY_COLUMNS, null)?.split(",")?.filter { it.isNotBlank() }
+            ?: emptyList()
+        set(value) = prefs.edit().putString(KEY_SUMMARY_COLUMNS, value.joinToString(",")).apply()
+
     /** How the Stocks or Mutual funds list ([type]: the instrument type's name) was last grouped and sorted. */
     fun holdingList(type: String): HoldingListPrefs = HoldingListPrefs(
         grouped = prefs.getBoolean(KEY_HOLDING_PREFIX + type + "_grouped", true),
@@ -272,6 +281,8 @@ class AppPreferences(context: Context) {
         private const val KEY_FD_BRANCHES = "fd_branches"
         private const val KEY_FD_OWNERS = "fd_owners"
         private const val KEY_HOLDING_PREFIX = "holdings_"
+        private const val KEY_SUMMARY_VIEW = "summary_view"
+        private const val KEY_SUMMARY_COLUMNS = "summary_columns"
 
         /** Sets are stored joined by a character no bank or holder name contains, so [export] keeps them as strings. */
         private const val SET_SEPARATOR = "\u001F"

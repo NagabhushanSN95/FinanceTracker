@@ -232,10 +232,13 @@ fun TransactionEditorScreen(
                 }
             }
 
-            FieldRow(
-                label = "Date",
-                value = form.date.format(DATE_FORMAT),
-                onClick = { showDate = true })
+            // 4.x order: particulars, accounts, category, rate, quantity, amount, then the date.
+            ParticularsField(
+                value = form.particulars,
+                suggestions = data.templates.filter { it.kind == form.kind },
+                onChange = viewModel::setParticulars,
+                onPickTemplate = viewModel::applyTemplate,
+            )
 
             if (form.showsFrom) FieldRow(
                 label = "From",
@@ -252,12 +255,6 @@ fun TransactionEditorScreen(
                 value = lookups.categoryPath(form.categoryId)
                     ?: if (form.kind == TransactionKind.EXPENSE) "Choose category" else "None",
                 onClick = { sheet = Sheet.CATEGORY },
-            )
-            ParticularsField(
-                value = form.particulars,
-                suggestions = data.templates.filter { it.kind == form.kind },
-                onChange = viewModel::setParticulars,
-                onPickTemplate = viewModel::applyTemplate,
             )
             // Rate, quantity and amount stay as typed; whatever is left empty is filled in on save, as Finance Manager
             // did (see EditorForm.resolvedMoney).
@@ -320,6 +317,11 @@ fun TransactionEditorScreen(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            FieldRow(
+                label = "Date",
+                value = form.date.format(DATE_FORMAT),
+                onClick = { showDate = true })
 
             // Also while editing, as in 4.x: an existing row becomes a template, or a picked template is updated with
             // the changed figures. The template with the same kind and particulars is replaced.

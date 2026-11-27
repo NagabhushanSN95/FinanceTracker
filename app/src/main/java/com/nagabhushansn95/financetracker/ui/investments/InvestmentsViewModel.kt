@@ -71,6 +71,19 @@ class InvestmentsViewModel(application: Application) : InvestmentSummaryViewMode
         SavingsGlance(month, year)
     }.flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** The column set the summary tables showed last, and the metrics of the Custom set; both survive restarts. */
+    var summaryView: MetricView
+        get() = MetricView.entries.firstOrNull { it.name == prefs.summaryView } ?: MetricView.VALUE
+        set(value) {
+            prefs.summaryView = value.name
+        }
+    var customColumns: List<Metric>
+        get() = prefs.summaryCustomColumns.mapNotNull { n -> Metric.entries.firstOrNull { it.name == n } }
+        set(value) {
+            prefs.summaryCustomColumns = value.map { it.name }
+        }
+
     private val _prices = MutableStateFlow(PriceStatus(message = prefs.lastPriceRefreshSummary))
     val prices: StateFlow<PriceStatus> = _prices
 

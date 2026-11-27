@@ -3,6 +3,7 @@ package com.nagabhushansn95.financetracker.ui.investments
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,12 +14,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,69 +39,148 @@ import com.nagabhushansn95.financetracker.data.investments.InvestmentSummary
 import com.nagabhushansn95.financetracker.data.investments.SummaryLine
 import com.nagabhushansn95.financetracker.ui.common.MoneyFormat
 
-/** Which three columns the summary table shows; the rest sit in a row's expanded detail. */
-enum class MetricView(val label: String, val columns: List<String>) {
-    VALUE("Value", listOf("Invested", "Current", "Held P/L")),
-    RETURNS("Returns", listOf("Realised", "Total P/L", "XIRR")),
-    ALLOCATION("Allocation", listOf("% inv", "% cur", "Target")),
+/** One figure of a summary line that can be a table column. */
+enum class Metric(val label: String) {
+    INVESTED("Invested"), CURRENT("Current"), HELD("Held P/L"),
+    REALISED("Realised"), TOTAL("Total P/L"), XIRR("XIRR"),
+    PCT_INVESTED("% inv"), PCT_CURRENT("% cur"), TARGET("Target");
+
+    /** Text and sign (for colouring) of this metric for [line]. */
+    fun cell(line: SummaryLine, s: InvestmentSummary): Pair<String, Double?> = when (this) {
+        INVESTED -> short(line.invested) to null
+        CURRENT -> short(line.current) to null
+        HELD -> short(line.held) to line.held
+        REALISED -> short(line.realised) to line.realised
+        TOTAL -> short(line.total) to line.total
+        XIRR -> pct(line.xirr) to null
+        PCT_INVESTED -> pct(s.investedShare(line)) to null
+        PCT_CURRENT -> pct(s.currentShare(line)) to null
+        TARGET -> {
+            val off = line.offTarget(s.total.current)
+            (line.targetPct?.let { pct(it) + (if (off) " !" else "") }
+                ?: "—") to (if (off) -1.0 else null)
+        }
+    }
+}
+
+/**
+ * Which columns the summary tables show: three fixed sets, or the user's own pick of one to four metrics (kept in
+ * preferences). The rest of a line sits in its expanded detail.
+ */
+enum class MetricView(val label: String, val metrics: List<Metric>) {
+    VALUE("Value", listOf(Metric.INVESTED, Metric.CURRENT, Metric.HELD)),
+    RETURNS("Returns", listOf(Metric.REALISED, Metric.TOTAL, Metric.XIRR)),
+    ALLOCATION("Allocation", listOf(Metric.PCT_INVESTED, Metric.PCT_CURRENT, Metric.TARGET)),
+    CUSTOM("Custom", emptyList());
+
+    /** The columns shown: [custom] for [CUSTOM] (the Value set until something is picked). */
+    fun columns(custom: List<Metric>): List<Metric> =
+        if (this == CUSTOM) custom.ifEmpty { VALUE.metrics } else metrics
+
+    companion object {
+        const val MAX_CUSTOM = 4
+    }
 }
 
 fun pct(value: Double?): String =
     value?.let { "%.1f%%".format(if (kotlin.math.abs(it) < 0.00005) 0.0 else it * 100) } ?: "—"
 private fun short(value: Double) = MoneyFormat.compact(value)
 
+/**
+ * The column-set chips. Tapping Custom when it is already selected, or when nothing has been picked yet, opens the
+ * picker.
+ */
 @Composable
 fun MetricViewChips(
     view: MetricView,
+    custom: List<Metric>,
     onChange: (MetricView) -> Unit,
+    onCustomChange: (List<Metric>) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    var picking by remember { mutableStateOf(false) }
+    // Four chips do not fit a narrow phone side by side, so the row scrolls.
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         MetricView.entries.forEach { v ->
             FilterChip(
                 selected = view == v,
-                onClick = { onChange(v) },
+                onClick = {
+                    if (v == MetricView.CUSTOM && (view == v || custom.isEmpty())) picking = true
+                    onChange(v)
+                },
                 label = { Text(v.label) })
         }
     }
+    if (picking) MetricPickerDialog(
+        selected = custom,
+        onDismiss = { picking = false },
+        onConfirm = { picking = false; onCustomChange(it) },
+    )
 }
 
-/** Text and sign (for colouring) of the three cells of [line] in [view]. */
-private fun cells(
-    line: SummaryLine,
-    s: InvestmentSummary,
-    view: MetricView
-): List<Pair<String, Double?>> = when (view) {
-    MetricView.VALUE -> listOf(
-        short(line.invested) to null,
-        short(line.current) to null,
-        short(line.held) to line.held
+/** Pick one to four of the nine metrics; they show in the table in this fixed order. */
+@Composable
+private fun MetricPickerDialog(
+    selected: List<Metric>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<Metric>) -> Unit
+) {
+    var picked by remember { mutableStateOf(selected.toSet()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Custom columns") },
+        text = {
+            Column {
+                Text(
+                    "Choose one to ${MetricView.MAX_CUSTOM} columns.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+                Metric.entries.forEach { m ->
+                    val on = m in picked
+                    val full = !on && picked.size >= MetricView.MAX_CUSTOM
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !full) {
+                                picked = if (on) picked - m else picked + m
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = on, onCheckedChange = null, enabled = !full)
+                        Text(
+                            m.label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = if (full) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = picked.isNotEmpty(),
+                onClick = { onConfirm(Metric.entries.filter { it in picked }) },
+            ) { Text("Done") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
-
-    MetricView.RETURNS -> listOf(
-        short(line.realised) to line.realised,
-        short(line.total) to line.total,
-        pct(line.xirr) to null
-    )
-
-    MetricView.ALLOCATION -> {
-        val off = line.offTarget(s.total.current)
-        listOf(
-            pct(s.investedShare(line)) to null, pct(s.currentShare(line)) to null,
-            (line.targetPct?.let { pct(it) + (if (off) " !" else "") }
-                ?: "—") to (if (off) -1.0 else null))
-    }
 }
 
 /**
- * The summary as a narrow table: a name column and three metric columns that fit a phone. Tap a row to expand it:
- * every metric, the notes, and the sub-lines underneath.
+ * The summary as a narrow table: a name column and up to four metric [columns] that fit a phone. Tap a row to expand
+ * it: every metric, the notes, and the sub-lines underneath. With the Target column the allocation bars show.
  */
 @Composable
 fun SummaryTable(
     lines: List<SummaryLine>,
     summary: InvestmentSummary,
-    view: MetricView,
+    columns: List<Metric>,
     expanded: Set<String>,
     onToggle: (String) -> Unit,
     footer: SummaryLine? = null,
@@ -100,9 +188,9 @@ fun SummaryTable(
     Column {
         Row(modifier = Modifier.padding(vertical = 6.dp)) {
             Box(modifier = Modifier.weight(1.4f))
-            view.columns.forEach {
+            columns.forEach {
                 Text(
-                    it,
+                    it.label,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     textAlign = TextAlign.End,
@@ -116,7 +204,7 @@ fun SummaryTable(
             LineBlock(
                 line,
                 summary,
-                view,
+                columns,
                 key = line.name,
                 indent = 0.dp,
                 bold = true,
@@ -129,7 +217,7 @@ fun SummaryTable(
             LineRow(
                 footer,
                 summary,
-                view,
+                columns,
                 bold = true,
                 indent = 0.dp,
                 marker = null,
@@ -144,7 +232,7 @@ fun SummaryTable(
 private fun LineBlock(
     line: SummaryLine,
     s: InvestmentSummary,
-    view: MetricView,
+    columns: List<Metric>,
     key: String,
     indent: Dp,
     bold: Boolean,
@@ -155,7 +243,7 @@ private fun LineBlock(
     LineRow(
         line,
         s,
-        view,
+        columns,
         bold = bold,
         indent = indent,
         marker = if (open) "▾" else "▸",
@@ -166,7 +254,7 @@ private fun LineBlock(
             LineBlock(
                 child,
                 s,
-                view,
+                columns,
                 key = "$key/${child.name}",
                 indent = indent + 16.dp,
                 bold = false,
@@ -181,7 +269,7 @@ private fun LineBlock(
 private fun LineRow(
     line: SummaryLine,
     s: InvestmentSummary,
-    view: MetricView,
+    columns: List<Metric>,
     bold: Boolean,
     indent: Dp,
     marker: String?,
@@ -205,7 +293,8 @@ private fun LineRow(
                     .padding(start = indent),
                 maxLines = 2,
             )
-            cells(line, s, view).forEach { (text, signed) ->
+            columns.forEach { m ->
+                val (text, signed) = m.cell(line, s)
                 Text(
                     text,
                     style = MaterialTheme.typography.bodySmall,
@@ -219,7 +308,7 @@ private fun LineRow(
                 )
             }
         }
-        if (bar && view == MetricView.ALLOCATION && line.targetPct != null) {
+        if (bar && Metric.TARGET in columns && line.targetPct != null) {
             AllocationBar(
                 share = s.currentShare(line),
                 target = line.targetPct,

@@ -61,8 +61,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nagabhushansn95.financetracker.data.db.entity.InstrumentType
+import com.nagabhushansn95.financetracker.data.db.entity.TransactionKind
 import com.nagabhushansn95.financetracker.ui.common.FilterSheet
 import com.nagabhushansn95.financetracker.ui.common.PeriodMenu
+import com.nagabhushansn95.financetracker.ui.theme.transfer
 import kotlinx.coroutines.launch
 import java.time.format.DateTimeFormatter
 
@@ -312,11 +314,17 @@ private fun LedgerList(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                        // 4.x colour code says it all: debits red, credits green, transfers blue; no sign.
+                        val transfer = row.kind == TransactionKind.TRANSFER
                         Text(
-                            (if (row.outflow) "−" else "+") + row.amountText,
+                            row.amountText,
                             style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium,
-                            color = if (row.outflow) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary,
+                            color = when {
+                                transfer -> MaterialTheme.colorScheme.transfer
+                                row.outflow -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.tertiary
+                            },
                             modifier = Modifier.width(AMOUNT_WIDTH),
                             textAlign = TextAlign.End,
                             maxLines = 1,
